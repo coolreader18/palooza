@@ -1,0 +1,32 @@
+{
+  "name": "palooza",
+  "version": "0.1.0",
+  "description": "A simple, lightweight assets pipeline designed for static sites",
+  "repository": "https://github.com/coolreader18/palooza/",
+  "author": "coolreader18 <33094578+coolreader18@users.noreply.github.com>",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "test": "cd test && node ../dist/cli build -c"
+  },
+  "bin": "dist/cli.js",
+  "devDependencies": {
+    "@types/fs-extra": "^5.0.4",
+    "@types/globby": "^8.0.0",
+    "@types/htmlparser2": "^3.7.31",
+    "@types/yargs": "^12.0.1",
+    "typescript": "^3.1.1"
+  },
+  "dependencies": {
+    "fs-extra": "^7.0.0",
+    "globby": "^8.0.1",
+    "htmlparser2": "^3.9.2",
+    "postcss": "^7.0.4",
+    "rollup": "^0.66.2",
+    "rollup-plugin-commonjs": "^9.1.8",
+    "rollup-plugin-json": "^3.1.0",
+    "rollup-plugin-node-resolve": "^3.4.0",
+    "yargs": "^12.0.2"
+  },
+  "license": "MIT"
+}
