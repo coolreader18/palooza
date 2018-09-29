@@ -54,8 +54,8 @@ export const readConfig = async (filename: string): Promise<Configuration> => {
 };
 
 export const runPalooza = async ({
-  srcDir = "src",
-  outDir = "out",
+  srcDir = "site",
+  outDir = "site-out",
   rollupPlugins,
   postCSSPlugins
 }: Configuration) => {

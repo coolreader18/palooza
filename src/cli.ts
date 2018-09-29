@@ -4,9 +4,10 @@ import { readConfig, Configuration, runPalooza } from ".";
 import path from "path";
 
 yargs
+  .usage("$0 <cmd> [args]")
   .command(
     "build [input]",
-    "Build the package",
+    "Build the site",
     yargs =>
       yargs
         .option("config", {
@@ -43,4 +44,7 @@ yargs
       await runPalooza(config);
     }
   )
+  .demandCommand(1, "")
+  .strict()
+  .showHelpOnFail(true)
   .help().argv;
