@@ -1,7 +1,7 @@
-import yargs from "yargs";
-import fs from "fs-extra";
+#!/usr/bin/env node
+import yargs, { Arguments } from "yargs";
 import { readConfig, Configuration, runPalooza } from ".";
-import path from "path";
+import { getConfigFile } from "./read-config";
 
 yargs
   .usage("$0 <cmd> [args]")
@@ -25,17 +25,12 @@ yargs
           type: "string",
           normalize: true
         }),
-    async ({ config: configOpt, input, output }) => {
-      let configFile: string | undefined = undefined;
-      if (configOpt !== undefined) {
-        if (configOpt === ".") {
-          configFile = fs
-            .readdirSync(process.cwd())
-            .find(filename => !!filename.match(/palooza\.config\.[a-zA-Z]+$/));
-        } else {
-          configFile = configOpt;
-        }
-        configFile = path.resolve(configFile);
+    async ({ config: configOpt, input, output }: BuildArgs) => {
+      let configFile = configOpt !== false ? getConfigFile(configOpt) : false;
+      if (configFile === undefined) {
+        throw new Error(
+          "Couldn't find config file, please specify it explicitly."
+        );
       }
       let config: Configuration = {};
       if (configFile) config = await readConfig(configFile);
@@ -44,7 +39,13 @@ yargs
       await runPalooza(config);
     }
   )
-  .demandCommand(1, "")
+  .demandCommand()
   .strict()
   .showHelpOnFail(true)
   .help().argv;
+
+interface BuildArgs extends Arguments {
+  config?: string | false;
+  input?: string;
+  output?: string;
+}

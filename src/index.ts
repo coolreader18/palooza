@@ -1,5 +1,5 @@
 import globby from "globby";
-import { rollup, Plugin as RollupPlugin, RollupFileOptions } from "rollup";
+import { rollup, Plugin as RollupPlugin } from "rollup";
 import path from "path";
 import { WritableStream } from "htmlparser2";
 import fs from "fs-extra";
@@ -7,16 +7,40 @@ import postcss, { Plugin as PostCSSPlugin } from "postcss";
 import rollupCommonjs from "rollup-plugin-commonjs";
 import rollupNodeResolve from "rollup-plugin-node-resolve";
 import rollupJSON from "rollup-plugin-json";
+// Module ids and options for the default plugins
+const _optionalRollupPlugins = Object.entries({
+  "rollup-plugin-typescript2": {}
+});
 
-const defaultRollupPlugins = (): RollupPlugin[] => [
-  rollupNodeResolve({
-    jsnext: true
-  }),
-  rollupCommonjs()
+const optionalRollupPlugins = (plugins: RollupPlugin[]) =>
+  _optionalRollupPlugins
+    .filter(([plugin]) => {
+      try {
+        // Check to see if the plugin is anywhere in the node path
+        require.resolve(plugin);
+        // Check that the user hasn't put it in the config
+        return !plugins.some(cur => cur.name === plugin);
+      } catch {
+        return false;
+      }
+    })
+    .map(([plugin, opts]): RollupPlugin => require(plugin)(opts));
+
+export const defaultRollupPlugins = (
+  plugins: RollupPlugin[] = []
+): RollupPlugin[] => [
+  rollupNodeResolve({ jsnext: true }),
+  rollupCommonjs(),
+  rollupJSON({ namedExports: false }),
+  ...optionalRollupPlugins(plugins),
+  ...plugins
 ];
+
+export { readConfig, getConfigFile } from "./read-config";
 
 export interface Configuration {
   rollupPlugins?: RollupPlugin[];
+  useDefaultRollupPlugins?: boolean;
   postCSSPlugins?: PostCSSPlugin<any>[];
   srcDir?: string;
   outDir?: string;
@@ -145,7 +169,7 @@ const processJS = async (
 ) => {
   const build = await rollup({
     input: absPath,
-    plugins: [...defaultRollupPlugins(), ...plugins]
+    plugins: defaultRollupPlugins(plugins)
   });
   await build.write({
     dir: outDir,
