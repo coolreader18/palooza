@@ -1,12 +1,13 @@
 import globby from "globby";
 import { rollup, Plugin as RollupPlugin } from "rollup";
 import path from "path";
-import { WritableStream } from "htmlparser2";
 import fs from "fs-extra";
 import postcss, { Plugin as PostCSSPlugin } from "postcss";
 import rollupCommonjs from "rollup-plugin-commonjs";
 import rollupNodeResolve from "rollup-plugin-node-resolve";
 import rollupJSON from "rollup-plugin-json";
+import Trumpet from "trumpet";
+
 // Module ids and options for the default plugins
 const _optionalRollupPlugins = Object.entries({
   "rollup-plugin-typescript2": {}
@@ -46,37 +47,6 @@ export interface Configuration {
   outDir?: string;
 }
 
-interface NodeModuleCompile extends NodeModule {
-  _compile(code: string, filename: string): any;
-}
-
-export const readConfig = async (filename: string): Promise<Configuration> => {
-  const plugins: RollupPlugin[] = [rollupJSON({ namedExports: false })];
-  try {
-    const ts = require("rollup-plugin-typescript2");
-    plugins.push(ts());
-  } catch (e) {}
-  const build = await rollup({
-    input: filename,
-    plugins,
-    external: (id: string) =>
-      (id[0] !== "." && !path.isAbsolute(id)) ||
-      id.slice(-5, id.length) === ".json"
-  });
-  const chunk = await build.generate({ format: "cjs" });
-  const defaultLoader = require.extensions[".js"];
-  require.extensions[".js"] = (module: NodeModuleCompile, file: string) => {
-    if (file === filename) {
-      module._compile(chunk.code, file);
-    } else {
-      defaultLoader(module, file);
-    }
-  };
-  const config = require(filename);
-  require.extensions[".js"] = defaultLoader;
-  return config;
-};
-
 export const runPalooza = async ({
   srcDir = "site",
   outDir = "site-out",
@@ -92,46 +62,43 @@ export const runPalooza = async ({
 
   const processes = htmlFiles.map(async html => {
     const processing: Promise<void>[] = [];
-    const parser = new WritableStream({
-      onopentag: (name, { src, rel, href }) => {
-        switch (name) {
-          case "script": {
-            if (!src) return;
-            const processorOpts = genProcessorOpts({
-              srcDir,
-              outDir,
-              request: src,
-              requester: html
-            });
-            if (processed.has(processorOpts.absPath)) return;
-            processing.push(processJS(processorOpts, rollupPlugins));
-            return;
-          }
-          case "link": {
-            if (rel !== "stylesheet" || !href) return;
-            const processorOpts = genProcessorOpts({
-              srcDir,
-              outDir,
-              request: href,
-              requester: html
-            });
-            if (processed.has(processorOpts.absPath)) return;
-            processing.push(processCSS(processorOpts, postCSSPlugins));
-            return;
-          }
-        }
-      }
+    const tr = new Trumpet();
+
+    tr.selectAll("script", elem => {
+      const { src } = elem.getAttributes();
+      if (!src) return;
+      const processorOpts = genProcessorOpts({
+        srcDir,
+        outDir,
+        request: src,
+        requester: html
+      });
+      if (processed.has(processorOpts.absPath)) return;
+      processing.push(processJS(processorOpts, rollupPlugins));
     });
+
+    tr.selectAll("link", elem => {
+      const { rel, href } = elem.getAttributes();
+      if (rel !== "stylesheet") return;
+      const processorOpts = genProcessorOpts({
+        srcDir,
+        outDir,
+        request: href,
+        requester: html
+      });
+      if (processed.has(processorOpts.absPath)) return;
+      processing.push(processCSS(processorOpts, postCSSPlugins));
+    });
+
     const outHtml = path.resolve(outDir, path.relative(srcDir, html));
-    const done = Promise.all([
-      fs.mkdirp(path.dirname(outHtml)).then(() => fs.copy(html, outHtml)),
-      new Promise(res => {
-        parser.on("finish", res);
-        parser.on("error", res);
-      }).then(() => Promise.all(processing))
-    ]);
-    fs.createReadStream(html, "utf8").pipe(parser);
-    await done;
+    await fs.mkdirp(path.dirname(outHtml));
+    fs.createReadStream(html, "utf8")
+      .pipe(tr)
+      .pipe(fs.createWriteStream(outHtml, "utf8"));
+    await new Promise(res => {
+      tr.on("finish", res);
+      tr.on("error", res);
+    }).then(() => Promise.all(processing));
   });
 
   await Promise.all(processes);
