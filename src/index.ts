@@ -28,21 +28,37 @@ const optionalRollupPlugins = (plugins: RollupPlugin[]) =>
     .map(([plugin, opts]): RollupPlugin => require(plugin)(opts));
 
 export const defaultRollupPlugins = (
-  plugins: RollupPlugin[] = []
-): RollupPlugin[] => [
-  rollupNodeResolve({ jsnext: true }),
-  rollupCommonjs(),
-  rollupJSON({ namedExports: false }),
-  ...optionalRollupPlugins(plugins),
-  ...plugins
-];
+  inputPlugins: ConfigRollupPlugin[] = []
+): RollupPlugin[] => {
+  const plugins = inputPlugins.map(
+    plugin =>
+      Array.isArray(plugin) ? getExtModule(plugin[0])(plugin[1]) : plugin
+  );
+  return [
+    rollupNodeResolve({ jsnext: true }),
+    rollupCommonjs(),
+    rollupJSON({ namedExports: false }),
+    ...optionalRollupPlugins(plugins),
+    ...plugins
+  ];
+};
+
+const getExtModule = (id: string) => {
+  try {
+    return require(id);
+  } catch {
+    throw new Error(`External module \`${id}\` not found`);
+  }
+};
 
 export { readConfig, getConfigFile } from "./read-config";
 
+type ConfigRollupPlugin = RollupPlugin | [string, object?];
+type ConfigPostCSSPlugin = PostCSSPlugin<any> | [string, any?];
 export interface Configuration {
-  rollupPlugins?: RollupPlugin[];
+  rollupPlugins?: ConfigRollupPlugin[];
   useDefaultRollupPlugins?: boolean;
-  postCSSPlugins?: PostCSSPlugin<any>[];
+  postCSSPlugins?: ConfigPostCSSPlugin[];
   srcDir?: string;
   outDir?: string;
 }
@@ -132,7 +148,7 @@ interface ProcessorOpts {
 
 const processJS = async (
   { outDir, absPath, relPath }: ProcessorOpts,
-  plugins?: RollupPlugin[]
+  plugins?: ConfigRollupPlugin[]
 ) => {
   const build = await rollup({
     input: absPath,
@@ -148,13 +164,21 @@ const processJS = async (
 
 const processCSS = async (
   { absPath, outPath }: ProcessorOpts,
-  plugins?: PostCSSPlugin<any>[]
+  inputPlugins?: ConfigPostCSSPlugin[]
 ) => {
-  if (!plugins || !plugins.length) {
+  if (!inputPlugins || !inputPlugins.length) {
     await fs.copy(absPath, outPath);
     return;
   }
-  const processor = postcss(plugins || []);
+  const plugins = inputPlugins.map(
+    (plugin): PostCSSPlugin<any> => {
+      if (!Array.isArray(plugin)) return plugin;
+      const plug = getExtModule(plugin[0]);
+      if (typeof plug === "function" && plug[1]) return plug(plugin[1]);
+      return plug;
+    }
+  );
+  const processor = postcss(plugins);
   const content = await fs.readFile(absPath, "utf8");
   const res = await processor.process(content, {
     from: absPath,
