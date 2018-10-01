@@ -59,15 +59,37 @@ export interface Configuration {
   rollupPlugins?: ConfigRollupPlugin[];
   useDefaultRollupPlugins?: boolean;
   postCSSPlugins?: ConfigPostCSSPlugin[];
+  plugins?: Plugin[];
   srcDir?: string;
   outDir?: string;
+}
+
+interface Plugin {
+  name: string;
+  processor: Processor | Processor[];
+}
+
+interface Processor {
+  target: Readonly<{
+    name: string;
+    attrs?: Readonly<{
+      [name: string]: boolean | string | ((attr: string) => boolean);
+    }>;
+    requestAttr: string;
+  }>;
+  transformElem?: (elem: Trumpet.Element) => void;
+  process: (
+    ctx: ProcessorContext,
+    elem: Trumpet.Element
+  ) => void | Promise<void>;
 }
 
 export const runPalooza = async ({
   srcDir = "site",
   outDir = "site-out",
   rollupPlugins,
-  postCSSPlugins
+  postCSSPlugins,
+  plugins: inputPlugins
 }: Configuration) => {
   srcDir = path.resolve(srcDir);
   outDir = path.resolve(outDir);
@@ -79,32 +101,62 @@ export const runPalooza = async ({
   const processes = htmlFiles.map(async html => {
     const processing: Promise<void>[] = [];
     const tr = new Trumpet();
+    const plugins: Plugin[] = [
+      jsPlugin(rollupPlugins),
+      cssPlugin(postCSSPlugins)
+    ];
+    if (inputPlugins) {
+      plugins.splice(0, 0, ...inputPlugins);
+    }
 
-    tr.selectAll("script", elem => {
-      const { src } = elem.getAttributes();
-      if (!src) return;
-      const processorOpts = genProcessorOpts({
-        srcDir,
-        outDir,
-        request: src,
-        requester: html
-      });
-      if (processed.has(processorOpts.absPath)) return;
-      processing.push(processJS(processorOpts, rollupPlugins));
-    });
+    interface ToProcess extends Processor {
+      name: string;
+    }
+    const toProcess: { [name: string]: ToProcess[] } = {};
+    for (const plugin of plugins) {
+      for (const processor of Array<Processor>().concat(plugin.processor)) {
+        const { name } = processor.target;
+        const toBeProcessed: ToProcess = {
+          ...processor,
+          name: plugin.name
+        };
+        if (!toProcess[name]) {
+          toProcess[name] = [toBeProcessed];
+        } else {
+          toProcess[name].push(toBeProcessed);
+        }
+      }
+    }
 
-    tr.selectAll("link", elem => {
-      const { rel, href } = elem.getAttributes();
-      if (rel !== "stylesheet") return;
-      const processorOpts = genProcessorOpts({
-        srcDir,
-        outDir,
-        request: href,
-        requester: html
+    for (const [name, processors] of Object.entries(toProcess)) {
+      tr.selectAll(name, elem => {
+        const attrs = elem.getAttributes();
+        curProcessor: for (const processor of processors) {
+          const { target } = processor;
+          if (target.attrs) {
+            for (const [attr, val] of Object.entries(target.attrs)) {
+              if (typeof val === "string") {
+                if (attrs[attr] !== val) continue curProcessor;
+              } else if (typeof val === "boolean") {
+                if (!!attrs[attr] !== val) continue curProcessor;
+              } else if (typeof val === "function") {
+                if (!val(attrs[attr])) continue curProcessor;
+              }
+            }
+          }
+          if (!attrs[target.requestAttr]) continue curProcessor;
+          const processorOpts = genProcessorOpts({
+            srcDir,
+            outDir,
+            request: attrs[target.requestAttr],
+            requester: html
+          });
+          if (processor.transformElem) processor.transformElem(elem);
+          if (processed.has(processorOpts.absPath)) return;
+          processor.process(processorOpts, elem);
+        }
       });
-      if (processed.has(processorOpts.absPath)) return;
-      processing.push(processCSS(processorOpts, postCSSPlugins));
-    });
+    }
 
     const outHtml = path.resolve(outDir, path.relative(srcDir, html));
     await fs.mkdirp(path.dirname(outHtml));
@@ -125,7 +177,7 @@ const genProcessorOpts = (input: {
   outDir: string;
   request: string;
   requester: string;
-}): ProcessorOpts => {
+}): ProcessorContext => {
   const absPath = path.resolve(path.dirname(input.requester), input.request);
   const relPath = path.relative(input.srcDir, absPath);
   return {
@@ -136,7 +188,7 @@ const genProcessorOpts = (input: {
   };
 };
 
-interface ProcessorOpts {
+interface ProcessorContext {
   srcDir: string;
   outDir: string;
   request: string;
@@ -146,48 +198,61 @@ interface ProcessorOpts {
   relPath: string;
 }
 
-const processJS = async (
-  { outDir, absPath, relPath }: ProcessorOpts,
-  plugins?: ConfigRollupPlugin[]
-) => {
-  const build = await rollup({
-    input: absPath,
-    plugins: defaultRollupPlugins(plugins)
-  });
-  await build.write({
-    dir: outDir,
-    file: relPath,
-    format: "iife",
-    assetFileNames: "rollup-assets/[name]-[hash][extname]"
-  });
-};
-
-const processCSS = async (
-  { absPath, outPath }: ProcessorOpts,
-  inputPlugins?: ConfigPostCSSPlugin[]
-) => {
-  if (!inputPlugins || !inputPlugins.length) {
-    await fs.copy(absPath, outPath);
-    return;
-  }
-  const plugins = inputPlugins.map(
-    (plugin): PostCSSPlugin<any> => {
-      if (!Array.isArray(plugin)) return plugin;
-      const plug = getExtModule(plugin[0]);
-      if (typeof plug === "function" && plug[1]) return plug(plugin[1]);
-      return plug;
+export const jsPlugin = (plugins?: ConfigRollupPlugin[]): Plugin => ({
+  name: "js",
+  processor: {
+    target: {
+      name: "script",
+      requestAttr: "src"
+    },
+    process: async ({ outDir, absPath, relPath }) => {
+      const build = await rollup({
+        input: absPath,
+        plugins: defaultRollupPlugins(plugins)
+      });
+      await build.write({
+        dir: outDir,
+        file: relPath,
+        format: "iife",
+        assetFileNames: "rollup-assets/[name]-[hash][extname]"
+      });
     }
-  );
-  const processor = postcss(plugins);
-  const content = await fs.readFile(absPath, "utf8");
-  const res = await processor.process(content, {
-    from: absPath,
-    to: outPath,
-    map: { annotation: `./${path.basename(outPath)}.map` }
-  });
-  const proms = [
-    fs.writeFile(outPath, res.css),
-    res.map && fs.writeFile(outPath + ".map", res.map.toString())
-  ];
-  await Promise.all(proms);
-};
+  }
+});
+
+export const cssPlugin = (inputPlugins?: ConfigPostCSSPlugin[]): Plugin => ({
+  name: "css",
+  processor: {
+    target: {
+      name: "link",
+      attrs: { rel: "stylesheet" },
+      requestAttr: "href"
+    },
+    process: async ({ absPath, outPath }: ProcessorContext) => {
+      if (!inputPlugins || !inputPlugins.length) {
+        await fs.copy(absPath, outPath);
+        return;
+      }
+      const plugins = inputPlugins.map(
+        (plugin): PostCSSPlugin<any> => {
+          if (!Array.isArray(plugin)) return plugin;
+          const plug = getExtModule(plugin[0]);
+          if (typeof plug === "function" && plug[1]) return plug(plugin[1]);
+          return plug;
+        }
+      );
+      const processor = postcss(plugins);
+      const content = await fs.readFile(absPath, "utf8");
+      const res = await processor.process(content, {
+        from: absPath,
+        to: outPath,
+        map: { annotation: `./${path.basename(outPath)}.map` }
+      });
+      const proms = [
+        fs.writeFile(outPath, res.css),
+        res.map && fs.writeFile(outPath + ".map", res.map.toString())
+      ];
+      await Promise.all(proms);
+    }
+  }
+});
